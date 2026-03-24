@@ -26,11 +26,12 @@ MEDIA_SUFFIXES = {".jpg", ".jpeg", ".mp4"}
 POSE_PATTERN = re.compile(r"_(\d+)\.(?:jpe?g)$", re.IGNORECASE)
 
 HB_GRADE_KEYWORDS = [
-    ("NearNormal", 2),
-    ("Mild", 3),
-    ("Moderate", 4),
-    ("Severe", 5),
-    ("Complete", 6),
+    ("Normal", 0),
+    ("NearNormal", 1),
+    ("Mild", 2),
+    ("Moderate", 3),
+    ("Severe", 4),
+    ("Complete", 5),
 ]
 
 
@@ -50,11 +51,16 @@ def extract_pose_index(filename: str) -> int | None:
 
 
 def extract_hb_grade(severity_folder: str) -> int | None:
-    if severity_folder.startswith("Normal"):
-        return 1
+    normalized = severity_folder.strip().lower()
 
+    # Prefer exact matches first.
     for keyword, grade in HB_GRADE_KEYWORDS:
-        if keyword in severity_folder:
+        if normalized == keyword.lower():
+            return grade
+
+    # Fallback for folder names with extra qualifiers.
+    for keyword, grade in sorted(HB_GRADE_KEYWORDS, key=lambda item: len(item[0]), reverse=True):
+        if keyword.lower() in normalized:
             return grade
     return None
 
