@@ -19,7 +19,7 @@ except ImportError:  # pragma: no cover - fallback for script-style imports
 BASE_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = BASE_DIR / "data"
 MAN_DIR = DATA_DIR / "manifests"
-PAR_PATH = MAN_DIR / "image_manifest_images_only.parquet"
+PAR_PATH = MAN_DIR / "training_manifest_images_only.parquet"
 
 VALID_SPLITS = {"train", "val", "test"}
 REQUIRED_COLUMNS = {"patient_id", "pose_index", "filepath", "hb_grade", "split"}

@@ -1,13 +1,7 @@
-from __future__ import annotations
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from torch import Tensor
-
 import torch.nn as nn
 from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
 
-class MultiPoseEfficientNetB0(nn.Module):
+class SingleImageEfficientNetB0(nn.Module):
     def __init__(self, num_classes=6, pretrained=True, dropout=0.3):
         super().__init__()
 
@@ -23,18 +17,14 @@ class MultiPoseEfficientNetB0(nn.Module):
             nn.Linear(self.feature_dim, num_classes)
         )
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x):
         """
-        x: [B, P, C, H, W]
+        x: [B, C, H, W]
         """
-        B, P, C, H, W = x.shape
+        features = self.encoder(x)               # [B, 1280, h, w]
+        features = self.pool(features)           # [B, 1280, 1, 1]
+        features = features.view(features.size(0), -1)  # [B, 1280]
 
-        x = x.view(B * P, C, H, W)
-        features = self.encoder(x)               # [B*P, 1280, h, w]
-        features = self.pool(features)           # [B*P, 1280, 1, 1]
-        features = features.view(B, P, -1)       # [B, P, 1280]
-
-        patient_features = features.mean(dim=1)  # [B, 1280]
-        logits = self.classifier(patient_features)
+        logits = self.classifier(features)
 
         return logits
