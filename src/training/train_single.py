@@ -7,23 +7,23 @@ from src.training.experiment_config import ExperimentConfig
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MANIFEST_PATH = PROJECT_ROOT / "data" / "manifests" / "training_manifest_images_only.parquet"
+MANIFEST_PATH = PROJECT_ROOT / "data" / "manifests" / "training_manifest_single_images.parquet"
 
 
 def main() -> None:
     config = ExperimentConfig(
-        run_name="efficientnet_b0_baseline_v1",
-        task_type="multi_pose",
-        model_name="efficientnet_b0_multi_pose",
+        run_name="efficientnet_b0_single_v1",
+        task_type="single_image",
+        model_name="efficientnet_b0_single_image",
         manifest_path=MANIFEST_PATH,
-        transform_name="basic",
+        transform_name="express",
         batch_size=4,
         num_epochs=15,
-        learning_rate=1e-4,
+        learning_rate=1e-5,
         dropout=0.3,
         pretrained=True,
         freeze_backbone=True,
-        use_class_weights=True,
+        use_class_weights=False,
         track_mae=True,
         num_workers=0,
         shuffle_train=True,
