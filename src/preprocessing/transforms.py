@@ -34,11 +34,20 @@ class FixedTopCrop:
         return F.crop(img, top, left, self.crop_size, self.crop_size)
 
 
-def get_basic_transform() -> transforms.Compose:
+def get_express_transform() -> transforms.Compose:
     """Return the baseline preprocessing transform used in training."""
     return transforms.Compose([
         transforms.Resize((336, 224)),
         FixedTopCrop(crop_size=224, top_offset=20),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
+    ])
+
+def get_basic_transform() -> transforms.Compose:
+    return transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize(
             mean=[0.485, 0.456, 0.406],
