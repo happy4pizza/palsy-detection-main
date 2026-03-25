@@ -1,9 +1,3 @@
-from __future__ import annotations
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from torch import Tensor
-
 import torch.nn as nn
 from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
 
@@ -23,7 +17,7 @@ class MultiPoseEfficientNetB0(nn.Module):
             nn.Linear(self.feature_dim, num_classes)
         )
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x):
         """
         x: [B, P, C, H, W]
         """
