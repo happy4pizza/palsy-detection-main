@@ -21,10 +21,10 @@ from sklearn.model_selection import train_test_split
 BASE_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = BASE_DIR / "data"
 MAN_DIR = DATA_DIR / "manifests"
-DEFAULT_IN_PARQUET = MAN_DIR / "image_manifest.parquet"
-DEFAULT_OUT_PATIENT_SPLITS_CSV = MAN_DIR / "patient_splits.csv"
-DEFAULT_OUT_WITH_SPLITS_PARQUET = MAN_DIR / "image_manifest_with_splits.parquet"
-DEFAULT_OUT_WITH_SPLITS_CSV = MAN_DIR / "image_manifest_with_splits.csv"
+DEFAULT_IN_PARQUET = MAN_DIR / "manifest_raw.parquet"
+DEFAULT_OUT_PATIENT_SPLITS_CSV = MAN_DIR / "patient_split.csv"
+DEFAULT_OUT_WITH_SPLITS_PARQUET = MAN_DIR / "manifest_split.parquet"
+DEFAULT_OUT_WITH_SPLITS_CSV = MAN_DIR / "manifest_split.csv"
 
 REQUIRED_COLUMNS = {"patient_id", "hb_grade", "cohort", "severity_folder"}
 

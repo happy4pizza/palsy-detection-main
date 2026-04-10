@@ -1,0 +1,53 @@
+[study]
+name = "finetune_batch_01"
+output_root = "data/runs"
+repeats = 3
+
+[data]
+manifest_path = "data/manifests/training_manifest_images_only.parquet"
+batch_size = 8
+num_workers = 4
+num_classes = 6
+train_split = "train"
+val_split = "val"
+test_split = "test"
+
+[training]
+epochs = 20
+device = "auto"
+early_stopping_patience = 5
+base_seed = 42
+monitor_metric = "val_acc"
+monitor_mode = "max"
+
+[loss]
+use_class_weights = true
+track_mae = true
+
+[evaluation]
+save_predictions_csv = true
+save_confusion_matrix_csv = true
+save_confusion_matrix_png = true
+save_normalized_confusion_matrix_png = true
+
+[[experiments]]
+name = "efficientnet_b0_frozen"
+model = "efficientnet_b0"
+pretrained = true
+dropout = 0.3
+freeze_backbone = true
+unfreeze_last_n_blocks = 0
+head_lr = 1e-4
+backbone_lr = 1e-5
+weight_decay = 1e-4
+
+[[experiments]]
+name = "efficientnet_b0_last_block"
+model = "efficientnet_b0"
+pretrained = true
+dropout = 0.3
+freeze_backbone = false
+unfreeze_last_n_blocks = 1
+head_lr = 1e-4
+backbone_lr = 1e-5
+weight_decay = 1e-4

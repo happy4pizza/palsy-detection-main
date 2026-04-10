@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from src.preprocessing.meei_dataset import MEEIDataset
-from src.preprocessing.transforms import get_basic_transform
+from src.data_pipeline.transforms import get_basic_transform
 from src.models.efficientnet_b0_model_v1 import MultiPoseEfficientNetB0
 
 # =========================================================

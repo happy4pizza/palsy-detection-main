@@ -19,8 +19,8 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_DATA_DIR = BASE_DIR / "data"
 DEFAULT_RAW_DIR = DEFAULT_DATA_DIR / "raw"
 DEFAULT_XLSX_PATH = DEFAULT_RAW_DIR / "pat_info.xlsx"
-DEFAULT_OUT_PARQUET = DEFAULT_DATA_DIR / "manifests" / "image_manifest.parquet"
-DEFAULT_OUT_CSV = DEFAULT_DATA_DIR / "manifests" / "image_manifest.csv"
+DEFAULT_OUT_PARQUET = DEFAULT_DATA_DIR / "manifests" / "manifest_raw.parquet"
+DEFAULT_OUT_CSV = DEFAULT_DATA_DIR / "manifests" / "manifest_raw.csv"
 
 MEDIA_SUFFIXES = {".jpg", ".jpeg", ".mp4"}
 POSE_PATTERN = re.compile(r"_(\d+)\.(?:jpe?g)$", re.IGNORECASE)
