@@ -1,402 +1,275 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import argparse
+from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Any
-import tomllib
+from typing import Sequence
 
 
-BASE_DIR = Path(__file__).resolve().parents[2]
-DEFAULT_TOML_PATH = BASE_DIR / "config.toml"
-VALID_SPLITS = {"train", "val", "test"}
-VALID_DEVICES = {"cpu", "cuda", "mps", "auto"}
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DATA_DIR = PROJECT_ROOT / "data"
+MANIFEST_DIR = DATA_DIR / "manifests"
+RUNS_DIR = DATA_DIR / "runs"
+
+VALID_MODELS = {"multi_pose", "single_image"}
+VALID_DEVICES = {"auto", "cpu", "cuda", "mps"}
+VALID_MONITOR_METRICS = {"train_loss", "train_acc", "train_mae", "val_loss", "val_acc", "val_mae"}
 VALID_MONITOR_MODES = {"min", "max"}
-VALID_MONITOR_METRICS = {"val_loss", "val_acc", "val_mae"}
-VALID_MODELS = {"efficientnet_b0", "single_efficientnet_b0"}
+VALID_AUGMENTATION = {"none", "light"}
+VALID_SPLITS = {"train", "val", "test"}
 
 
 @dataclass(frozen=True)
-class StudyConfig:
-    name: str
+class TrainConfig:
+    run_name: str
     output_root: Path
-    repeats: int
-
-
-@dataclass(frozen=True)
-class DataConfig:
     manifest_path: Path
-    batch_size: int
-    num_workers: int
+    model_name: str
     num_classes: int
     train_split: str
     val_split: str
-    test_split: str
-
-
-@dataclass(frozen=True)
-class TrainingConfig:
+    batch_size: int
     epochs: int
-    device: str
     early_stopping_patience: int
-    base_seed: int
-    monitor_metric: str
-    monitor_mode: str
-
-
-@dataclass(frozen=True)
-class LossConfig:
-    use_class_weights: bool
-    track_mae: bool
-
-
-@dataclass(frozen=True)
-class EvaluationConfig:
-    save_predictions_csv: bool
-    save_confusion_matrix_csv: bool
-    save_confusion_matrix_png: bool
-    save_normalized_confusion_matrix_png: bool
-
-
-@dataclass(frozen=True)
-class ExperimentConfig:
-    name: str
-    model: str
-    pretrained: bool
+    min_epochs: int
+    device: str
+    seed: int
+    num_workers: int
     dropout: float
+    pretrained: bool
     freeze_backbone: bool
     unfreeze_last_n_blocks: int
     head_lr: float
     backbone_lr: float
     weight_decay: float
+    use_class_weights: bool
+    track_mae: bool
+    train_augmentation: str
+    pose_indices: tuple[int, ...] | None
+    overfit_patients: int | None
+    max_train_patients: int | None
+    max_val_patients: int | None
+    limit_train_batches: int | None
+    limit_val_batches: int | None
+    monitor_metric: str
+    monitor_mode: str
+    scheduler_patience: int
+    scheduler_factor: float
+
+    @property
+    def run_dir(self) -> Path:
+        return self.output_root / self.run_name
+
+    def to_dict(self) -> dict[str, object]:
+        config_dict = asdict(self)
+        config_dict["output_root"] = str(self.output_root)
+        config_dict["manifest_path"] = str(self.manifest_path)
+        config_dict["run_dir"] = str(self.run_dir)
+        return config_dict
 
 
-@dataclass(frozen=True)
-class AppConfig:
-    study: StudyConfig
-    data: DataConfig
-    training: TrainingConfig
-    loss: LossConfig
-    evaluation: EvaluationConfig
-    experiments: list[ExperimentConfig]
+def default_manifest_for_model(model_name: str) -> Path:
+    if model_name == "multi_pose":
+        return MANIFEST_DIR / "manifest_face224.parquet"
+    if model_name == "single_image":
+        return MANIFEST_DIR / "manifest_single_image_face224.parquet"
+    raise ValueError(f"Unsupported model_name '{model_name}'. Expected one of {sorted(VALID_MODELS)}.")
 
 
-def _expect_key(section: dict[str, Any], key: str, section_name: str) -> Any:
-    if key not in section:
-        raise ValueError(f"Missing required key '{section_name}.{key}'.")
-    return section[key]
+def parse_pose_indices(raw_value: str | None) -> tuple[int, ...] | None:
+    if raw_value is None:
+        return None
+
+    stripped = raw_value.strip()
+    if not stripped:
+        return None
+
+    pose_indices: list[int] = []
+    for token in stripped.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        pose_indices.append(int(token))
+
+    if not pose_indices:
+        return None
+
+    return tuple(sorted(set(pose_indices)))
 
 
-def _expect_str(section: dict[str, Any], key: str, section_name: str) -> str:
-    value = _expect_key(section, key, section_name)
-    if not isinstance(value, str):
+def _timestamped_run_name(model_name: str) -> str:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"{model_name}_{timestamp}"
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Train a fast-iteration facial palsy baseline.")
+
+    parser.add_argument("--run-name")
+    parser.add_argument("--output-root", type=Path, default=RUNS_DIR)
+    parser.add_argument("--model", dest="model_name", default="multi_pose", choices=sorted(VALID_MODELS))
+    parser.add_argument("--manifest-path", type=Path)
+    parser.add_argument("--num-classes", type=int, default=6)
+    parser.add_argument("--train-split", default="train")
+    parser.add_argument("--val-split", default="val")
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--epochs", type=int, default=8)
+    parser.add_argument("--early-stopping-patience", type=int, default=3)
+    parser.add_argument("--min-epochs", type=int, default=3)
+    parser.add_argument("--device", default="auto", choices=sorted(VALID_DEVICES))
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--dropout", type=float, default=0.3)
+    parser.add_argument("--head-lr", type=float, default=1e-3)
+    parser.add_argument("--backbone-lr", type=float, default=1e-4)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--train-augmentation", default="none", choices=sorted(VALID_AUGMENTATION))
+    parser.add_argument("--pose-indices", type=parse_pose_indices)
+    parser.add_argument("--overfit-patients", type=int)
+    parser.add_argument("--max-train-patients", type=int)
+    parser.add_argument("--max-val-patients", type=int)
+    parser.add_argument("--limit-train-batches", type=int)
+    parser.add_argument("--limit-val-batches", type=int)
+    parser.add_argument("--monitor-metric", default="val_loss", choices=sorted(VALID_MONITOR_METRICS))
+    parser.add_argument("--monitor-mode", default="min", choices=sorted(VALID_MONITOR_MODES))
+    parser.add_argument("--scheduler-patience", type=int, default=2)
+    parser.add_argument("--scheduler-factor", type=float, default=0.5)
+
+    parser.add_argument("--pretrained", dest="pretrained", action="store_true")
+    parser.add_argument("--no-pretrained", dest="pretrained", action="store_false")
+    parser.set_defaults(pretrained=True)
+
+    parser.add_argument("--freeze-backbone", dest="freeze_backbone", action="store_true")
+    parser.add_argument("--no-freeze-backbone", dest="freeze_backbone", action="store_false")
+    parser.set_defaults(freeze_backbone=True)
+    parser.add_argument("--unfreeze-last-n-blocks", type=int, default=0)
+
+    parser.add_argument("--use-class-weights", dest="use_class_weights", action="store_true")
+    parser.add_argument("--no-class-weights", dest="use_class_weights", action="store_false")
+    parser.set_defaults(use_class_weights=True)
+
+    parser.add_argument("--track-mae", dest="track_mae", action="store_true")
+    parser.add_argument("--no-track-mae", dest="track_mae", action="store_false")
+    parser.set_defaults(track_mae=True)
+
+    return parser
+
+
+def _validate_config(config: TrainConfig) -> None:
+    if config.num_classes <= 0:
+        raise ValueError(f"num_classes must be > 0. Got {config.num_classes}.")
+    if config.batch_size <= 0:
+        raise ValueError(f"batch_size must be > 0. Got {config.batch_size}.")
+    if config.epochs <= 0:
+        raise ValueError(f"epochs must be > 0. Got {config.epochs}.")
+    if config.min_epochs <= 0:
+        raise ValueError(f"min_epochs must be > 0. Got {config.min_epochs}.")
+    if config.min_epochs > config.epochs:
+        raise ValueError(f"min_epochs ({config.min_epochs}) cannot exceed epochs ({config.epochs}).")
+    if config.early_stopping_patience < 0:
         raise ValueError(
-            f"Invalid type for '{section_name}.{key}': expected str, got {type(value).__name__}."
+            f"early_stopping_patience must be >= 0. Got {config.early_stopping_patience}."
         )
-    return value
-
-
-def _expect_bool(section: dict[str, Any], key: str, section_name: str) -> bool:
-    value = _expect_key(section, key, section_name)
-    if not isinstance(value, bool):
+    if config.scheduler_patience < 0:
+        raise ValueError(f"scheduler_patience must be >= 0. Got {config.scheduler_patience}.")
+    if not 0.0 < config.scheduler_factor < 1.0:
+        raise ValueError(f"scheduler_factor must be in (0, 1). Got {config.scheduler_factor}.")
+    if not 0.0 <= config.dropout < 1.0:
+        raise ValueError(f"dropout must be in [0, 1). Got {config.dropout}.")
+    if config.head_lr <= 0:
+        raise ValueError(f"head_lr must be > 0. Got {config.head_lr}.")
+    if config.backbone_lr <= 0:
+        raise ValueError(f"backbone_lr must be > 0. Got {config.backbone_lr}.")
+    if config.weight_decay < 0:
+        raise ValueError(f"weight_decay must be >= 0. Got {config.weight_decay}.")
+    if config.train_split not in VALID_SPLITS:
+        raise ValueError(f"train_split must be one of {sorted(VALID_SPLITS)}. Got {config.train_split}.")
+    if config.val_split not in VALID_SPLITS:
+        raise ValueError(f"val_split must be one of {sorted(VALID_SPLITS)}. Got {config.val_split}.")
+    if config.freeze_backbone and config.unfreeze_last_n_blocks > 0:
+        raise ValueError("freeze_backbone=true cannot be combined with unfreeze_last_n_blocks > 0.")
+    if config.unfreeze_last_n_blocks < 0:
         raise ValueError(
-            f"Invalid type for '{section_name}.{key}': expected bool, got {type(value).__name__}."
+            f"unfreeze_last_n_blocks must be >= 0. Got {config.unfreeze_last_n_blocks}."
         )
-    return value
-
-
-def _expect_positive_int(section: dict[str, Any], key: str, section_name: str) -> int:
-    value = _expect_key(section, key, section_name)
-    if isinstance(value, bool) or not isinstance(value, int):
+    if config.overfit_patients is not None and config.overfit_patients <= 0:
+        raise ValueError(f"overfit_patients must be > 0. Got {config.overfit_patients}.")
+    if config.max_train_patients is not None and config.max_train_patients <= 0:
         raise ValueError(
-            f"Invalid type for '{section_name}.{key}': expected int, got {type(value).__name__}."
+            f"max_train_patients must be > 0. Got {config.max_train_patients}."
         )
-    if value <= 0:
-        raise ValueError(f"'{section_name}.{key}' must be > 0. Got {value}.")
-    return value
-
-
-def _expect_non_negative_int(section: dict[str, Any], key: str, section_name: str) -> int:
-    value = _expect_key(section, key, section_name)
-    if isinstance(value, bool) or not isinstance(value, int):
+    if config.max_val_patients is not None and config.max_val_patients <= 0:
+        raise ValueError(f"max_val_patients must be > 0. Got {config.max_val_patients}.")
+    if config.limit_train_batches is not None and config.limit_train_batches <= 0:
         raise ValueError(
-            f"Invalid type for '{section_name}.{key}': expected int, got {type(value).__name__}."
+            f"limit_train_batches must be > 0. Got {config.limit_train_batches}."
         )
-    if value < 0:
-        raise ValueError(f"'{section_name}.{key}' must be >= 0. Got {value}.")
-    return value
+    if config.limit_val_batches is not None and config.limit_val_batches <= 0:
+        raise ValueError(f"limit_val_batches must be > 0. Got {config.limit_val_batches}.")
+    if config.overfit_patients is not None and config.max_train_patients is not None:
+        raise ValueError("Use either overfit_patients or max_train_patients, not both.")
 
-
-def _expect_non_negative_float(section: dict[str, Any], key: str, section_name: str) -> float:
-    value = _expect_key(section, key, section_name)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    expected_modes = {
+        "train_loss": "min",
+        "train_mae": "min",
+        "val_loss": "min",
+        "val_mae": "min",
+        "train_acc": "max",
+        "val_acc": "max",
+    }
+    expected_mode = expected_modes[config.monitor_metric]
+    if config.monitor_mode != expected_mode:
         raise ValueError(
-            f"Invalid type for '{section_name}.{key}': expected float, got {type(value).__name__}."
+            f"monitor_metric='{config.monitor_metric}' requires monitor_mode='{expected_mode}', "
+            f"got '{config.monitor_mode}'."
         )
-    value = float(value)
-    if value < 0:
-        raise ValueError(f"'{section_name}.{key}' must be >= 0. Got {value}.")
-    return value
+    if config.monitor_metric.endswith("_mae") and not config.track_mae:
+        raise ValueError("Monitoring MAE requires track_mae=true.")
 
 
-def _normalize_config_values(config: dict[str, Any]) -> None:
-    """Normalize configurable string enum values in-place."""
-    data = config.get("data")
-    if isinstance(data, dict):
-        for key in ("train_split", "val_split", "test_split"):
-            value = data.get(key)
-            if isinstance(value, str):
-                data[key] = value.strip().lower()
+def parse_args(argv: Sequence[str] | None = None) -> TrainConfig:
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
 
-    training = config.get("training")
-    if isinstance(training, dict):
-        for key in ("device", "monitor_metric", "monitor_mode"):
-            value = training.get(key)
-            if isinstance(value, str):
-                training[key] = value.strip().lower()
+    manifest_path = args.manifest_path or default_manifest_for_model(args.model_name)
+    run_name = args.run_name or _timestamped_run_name(args.model_name)
 
-    experiments = config.get("experiments")
-    if isinstance(experiments, list):
-        for exp in experiments:
-            if isinstance(exp, dict):
-                model = exp.get("model")
-                if isinstance(model, str):
-                    exp["model"] = model.strip().lower()
-
-
-def _validate_config(config: dict[str, Any]) -> None:
-    required_sections = ["study", "data", "training", "loss", "evaluation", "experiments"]
-    for section_name in required_sections:
-        if section_name not in config:
-            raise ValueError(f"Missing required config section: '{section_name}'.")
-
-    study = config["study"]
-    data = config["data"]
-    training = config["training"]
-    loss = config["loss"]
-    evaluation = config["evaluation"]
-    experiments = config["experiments"]
-
-    if not isinstance(study, dict):
-        raise ValueError("Section 'study' must be a table/object.")
-    if not isinstance(data, dict):
-        raise ValueError("Section 'data' must be a table/object.")
-    if not isinstance(training, dict):
-        raise ValueError("Section 'training' must be a table/object.")
-    if not isinstance(loss, dict):
-        raise ValueError("Section 'loss' must be a table/object.")
-    if not isinstance(evaluation, dict):
-        raise ValueError("Section 'evaluation' must be a table/object.")
-    if not isinstance(experiments, list):
-        raise ValueError("Section 'experiments' must be an array of tables.")
-    if not experiments:
-        raise ValueError("Section 'experiments' must contain at least one experiment.")
-
-    _expect_str(study, "name", "study")
-    _expect_str(study, "output_root", "study")
-    _expect_positive_int(study, "repeats", "study")
-
-    _expect_str(data, "manifest_path", "data")
-    _expect_positive_int(data, "batch_size", "data")
-    _expect_non_negative_int(data, "num_workers", "data")
-    _expect_positive_int(data, "num_classes", "data")
-
-    train_split = _expect_str(data, "train_split", "data")
-    val_split = _expect_str(data, "val_split", "data")
-    test_split = _expect_str(data, "test_split", "data")
-    for split_key, split_value in [
-        ("train_split", train_split),
-        ("val_split", val_split),
-        ("test_split", test_split),
-    ]:
-        if split_value not in VALID_SPLITS:
-            raise ValueError(
-                f"Invalid 'data.{split_key}': {split_value}. Expected one of {sorted(VALID_SPLITS)}."
-            )
-
-    _expect_positive_int(training, "epochs", "training")
-    device = _expect_str(training, "device", "training")
-    if device not in VALID_DEVICES:
-        raise ValueError(
-            f"Invalid 'training.device': {device}. Expected one of {sorted(VALID_DEVICES)}."
-        )
-    _expect_non_negative_int(training, "early_stopping_patience", "training")
-    _expect_non_negative_int(training, "base_seed", "training")
-
-    monitor_metric = _expect_str(training, "monitor_metric", "training")
-    if monitor_metric not in VALID_MONITOR_METRICS:
-        raise ValueError(
-            f"Invalid 'training.monitor_metric': {monitor_metric}. "
-            f"Expected one of {sorted(VALID_MONITOR_METRICS)}."
-        )
-
-    monitor_mode = _expect_str(training, "monitor_mode", "training")
-    if monitor_mode not in VALID_MONITOR_MODES:
-        raise ValueError(
-            f"Invalid 'training.monitor_mode': {monitor_mode}. "
-            f"Expected one of {sorted(VALID_MONITOR_MODES)}."
-        )
-
-    expected_modes = {"val_loss": "min", "val_mae": "min", "val_acc": "max"}
-    expected_mode = expected_modes[monitor_metric]
-    if monitor_mode != expected_mode:
-        raise ValueError(
-            f"Incompatible monitor settings: training.monitor_metric='{monitor_metric}' "
-            f"requires training.monitor_mode='{expected_mode}', got '{monitor_mode}'."
-        )
-
-    track_mae = _expect_bool(loss, "track_mae", "loss")
-    _expect_bool(loss, "use_class_weights", "loss")
-
-    if monitor_metric == "val_mae" and not track_mae:
-        raise ValueError(
-            "'training.monitor_metric=val_mae' requires 'loss.track_mae=true'."
-        )
-
-    _expect_bool(evaluation, "save_predictions_csv", "evaluation")
-    _expect_bool(evaluation, "save_confusion_matrix_csv", "evaluation")
-    _expect_bool(evaluation, "save_confusion_matrix_png", "evaluation")
-    _expect_bool(evaluation, "save_normalized_confusion_matrix_png", "evaluation")
-
-    required_exp_keys = [
-        "name",
-        "model",
-        "pretrained",
-        "dropout",
-        "freeze_backbone",
-        "unfreeze_last_n_blocks",
-        "head_lr",
-        "backbone_lr",
-        "weight_decay",
-    ]
-
-    seen_experiment_names: set[str] = set()
-    for i, exp in enumerate(experiments):
-        section_name = f"experiments[{i}]"
-        if not isinstance(exp, dict):
-            raise ValueError(f"'{section_name}' must be a table/object.")
-        for key in required_exp_keys:
-            if key not in exp:
-                raise ValueError(f"Missing required key '{section_name}.{key}'.")
-
-        exp_name = _expect_str(exp, "name", section_name)
-        if exp_name in seen_experiment_names:
-            raise ValueError(f"Duplicate experiment name found: '{exp_name}'.")
-        seen_experiment_names.add(exp_name)
-
-        model = _expect_str(exp, "model", section_name)
-        if model not in VALID_MODELS:
-            raise ValueError(
-                f"Invalid '{section_name}.model': {model}. Expected one of {sorted(VALID_MODELS)}."
-            )
-
-        _expect_bool(exp, "pretrained", section_name)
-        freeze_backbone = _expect_bool(exp, "freeze_backbone", section_name)
-        unfreeze_last_n_blocks = _expect_non_negative_int(exp, "unfreeze_last_n_blocks", section_name)
-
-        dropout = _expect_non_negative_float(exp, "dropout", section_name)
-        if not 0.0 <= dropout < 1.0:
-            raise ValueError(f"'{section_name}.dropout' must be in [0, 1). Got {dropout}.")
-
-        head_lr = _expect_non_negative_float(exp, "head_lr", section_name)
-        backbone_lr = _expect_non_negative_float(exp, "backbone_lr", section_name)
-        _expect_non_negative_float(exp, "weight_decay", section_name)
-
-        if head_lr <= 0:
-            raise ValueError(f"'{section_name}.head_lr' must be > 0. Got {head_lr}.")
-        if backbone_lr <= 0:
-            raise ValueError(f"'{section_name}.backbone_lr' must be > 0. Got {backbone_lr}.")
-        if freeze_backbone and unfreeze_last_n_blocks > 0:
-            raise ValueError(
-                f"'{section_name}' has conflicting settings: "
-                "freeze_backbone=true with unfreeze_last_n_blocks>0."
-            )
-
-
-def _to_dataclass_config(config: dict[str, Any], config_file: Path) -> AppConfig:
-    study = config["study"]
-    data = config["data"]
-    training = config["training"]
-    loss = config["loss"]
-    evaluation = config["evaluation"]
-    experiments = config["experiments"]
-
-    def resolve_path(raw_path: str) -> Path:
-        path = Path(raw_path)
-        if not path.is_absolute():
-            path = (config_file.parent / path).resolve()
-        return path
-
-    study_cfg = StudyConfig(
-        name=study["name"],
-        output_root=resolve_path(study["output_root"]),
-        repeats=study["repeats"],
+    config = TrainConfig(
+        run_name=run_name,
+        output_root=args.output_root.resolve(),
+        manifest_path=manifest_path.resolve(),
+        model_name=args.model_name,
+        num_classes=args.num_classes,
+        train_split=args.train_split,
+        val_split=args.val_split,
+        batch_size=args.batch_size,
+        epochs=args.epochs,
+        early_stopping_patience=args.early_stopping_patience,
+        min_epochs=args.min_epochs,
+        device=args.device,
+        seed=args.seed,
+        num_workers=args.num_workers,
+        dropout=args.dropout,
+        pretrained=args.pretrained,
+        freeze_backbone=args.freeze_backbone,
+        unfreeze_last_n_blocks=args.unfreeze_last_n_blocks,
+        head_lr=args.head_lr,
+        backbone_lr=args.backbone_lr,
+        weight_decay=args.weight_decay,
+        use_class_weights=args.use_class_weights,
+        track_mae=args.track_mae,
+        train_augmentation=args.train_augmentation,
+        pose_indices=args.pose_indices,
+        overfit_patients=args.overfit_patients,
+        max_train_patients=args.max_train_patients,
+        max_val_patients=args.max_val_patients,
+        limit_train_batches=args.limit_train_batches,
+        limit_val_batches=args.limit_val_batches,
+        monitor_metric=args.monitor_metric,
+        monitor_mode=args.monitor_mode,
+        scheduler_patience=args.scheduler_patience,
+        scheduler_factor=args.scheduler_factor,
     )
-    data_cfg = DataConfig(
-        manifest_path=resolve_path(data["manifest_path"]),
-        batch_size=data["batch_size"],
-        num_workers=data["num_workers"],
-        num_classes=data["num_classes"],
-        train_split=data["train_split"],
-        val_split=data["val_split"],
-        test_split=data["test_split"],
-    )
-    training_cfg = TrainingConfig(
-        epochs=training["epochs"],
-        device=training["device"],
-        early_stopping_patience=training["early_stopping_patience"],
-        base_seed=training["base_seed"],
-        monitor_metric=training["monitor_metric"],
-        monitor_mode=training["monitor_mode"],
-    )
-    loss_cfg = LossConfig(
-        use_class_weights=loss["use_class_weights"],
-        track_mae=loss["track_mae"],
-    )
-    evaluation_cfg = EvaluationConfig(
-        save_predictions_csv=evaluation["save_predictions_csv"],
-        save_confusion_matrix_csv=evaluation["save_confusion_matrix_csv"],
-        save_confusion_matrix_png=evaluation["save_confusion_matrix_png"],
-        save_normalized_confusion_matrix_png=evaluation["save_normalized_confusion_matrix_png"],
-    )
-
-    exp_cfgs = [
-        ExperimentConfig(
-            name=exp["name"],
-            model=exp["model"],
-            pretrained=exp["pretrained"],
-            dropout=float(exp["dropout"]),
-            freeze_backbone=exp["freeze_backbone"],
-            unfreeze_last_n_blocks=exp["unfreeze_last_n_blocks"],
-            head_lr=float(exp["head_lr"]),
-            backbone_lr=float(exp["backbone_lr"]),
-            weight_decay=float(exp["weight_decay"]),
-        )
-        for exp in experiments
-    ]
-
-    return AppConfig(
-        study=study_cfg,
-        data=data_cfg,
-        training=training_cfg,
-        loss=loss_cfg,
-        evaluation=evaluation_cfg,
-        experiments=exp_cfgs,
-    )
-
-
-def load_config(config_path: str | Path | None = None) -> AppConfig:
-    config_file = Path(config_path) if config_path is not None else DEFAULT_TOML_PATH
-    if not config_file.exists():
-        raise FileNotFoundError(f"Config file not found: {config_file}")
-    if not config_file.is_file():
-        raise ValueError(f"Config path is not a file: {config_file}")
-
-    try:
-        with config_file.open("rb") as f:
-            config = tomllib.load(f)
-    except tomllib.TOMLDecodeError as e:
-        raise ValueError(f"Invalid TOML in config file '{config_file}': {e}") from e
-
-    _normalize_config_values(config)
     _validate_config(config)
-    return _to_dataclass_config(config, config_file.resolve())
+    return config

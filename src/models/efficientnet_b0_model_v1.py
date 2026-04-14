@@ -25,7 +25,7 @@ class MultiPoseEfficientNetB0(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         """
-        x: [B, P, C, H, W]
+        x: [B, P, C, H, W] -> [B * P, C, H, W]
         """
         B, P, C, H, W = x.shape
 
