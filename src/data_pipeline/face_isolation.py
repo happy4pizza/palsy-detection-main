@@ -11,6 +11,8 @@ import mediapipe as mp
 import numpy as np
 import pandas as pd
 
+from src.data_pipeline.path_utils import relativize_to_project_root, resolve_manifest_filepath
+
 
 # Face oval indices, still useful for left/right edge anchors
 FACE_OVAL_IDX = [
@@ -475,7 +477,7 @@ def run_manifest_face_isolation(
 
             # Keep a single crop box per patient so every output image shares the same framing.
             for idx, row in patient_rows.iterrows():
-                old_path = Path(row["filepath"])
+                old_path = resolve_manifest_filepath(row["filepath"], project_root=PROJECT_ROOT)
                 patient_id_str = str(patient_id)
                 new_path = build_face_output_path(
                     image_path=old_path,
@@ -495,7 +497,11 @@ def run_manifest_face_isolation(
                 if reference_crop_spec is None and resolved_crop_spec is not None:
                     reference_crop_spec = resolved_crop_spec
 
-                new_paths.at[idx] = str(new_path) if success else None
+                new_paths.at[idx] = (
+                    relativize_to_project_root(new_path, project_root=PROJECT_ROOT)
+                    if success
+                    else None
+                )
                 success_flags.at[idx] = success
 
             if reference_crop_spec is None:

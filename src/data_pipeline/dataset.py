@@ -9,6 +9,7 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
+from src.data_pipeline.path_utils import PROJECT_ROOT, resolve_manifest_filepath
 from src.data_pipeline.transforms import get_basic_transform
 
 
@@ -41,7 +42,12 @@ def load_manifest_dataframe(
 
 
 def build_patient_table(df: pd.DataFrame) -> pd.DataFrame:
-    patient_df = df[["patient_id", "hb_grade"]].drop_duplicates().sort_values("patient_id").reset_index(drop=True)
+    patient_df = (
+        df[["patient_id", "hb_grade"]]
+        .drop_duplicates()
+        .sort_values("patient_id")
+        .reset_index(drop=True)
+    )
 
     label_counts = patient_df.groupby("patient_id")["hb_grade"].nunique()
     bad_patients = label_counts[label_counts != 1]
@@ -90,7 +96,11 @@ def filter_manifest_dataframe(
         filtered = filtered[filtered["pose_index"].isin(pose_index_set)].copy()
 
     if max_patients is not None:
-        selected_patient_ids = sample_patient_ids(filtered, max_patients=max_patients, subset_seed=subset_seed)
+        selected_patient_ids = sample_patient_ids(
+            filtered,
+            max_patients=max_patients,
+            subset_seed=subset_seed,
+        )
         filtered = filtered[filtered["patient_id"].astype(str).isin(set(selected_patient_ids))].copy()
 
     if filtered.empty:
@@ -99,9 +109,7 @@ def filter_manifest_dataframe(
     return filtered.sort_values(["patient_id", "pose_index"]).reset_index(drop=True)
 
 
-class MEEIDataset(Dataset):
-    """Patient-level dataset that returns all requested poses for one patient."""
-
+class BasePalsyDataset(Dataset):
     def __init__(
         self,
         manifest_path: Path | None = None,
@@ -111,12 +119,17 @@ class MEEIDataset(Dataset):
         manifest_df: pd.DataFrame | None = None,
         patient_ids: Sequence[str] | None = None,
         pose_indices: Sequence[int] | None = None,
+        expected_pose_indices: Sequence[int] | None = None,
         max_patients: int | None = None,
+        project_root: Path | None = None,
         subset_seed: int = 42,
+        validate_filepaths: bool = True,
     ) -> None:
         self.manifest_path = Path(manifest_path) if manifest_path is not None else None
         self.split = split
         self.transform = transform if transform is not None else get_basic_transform()
+        self.project_root = (Path(project_root) if project_root is not None else PROJECT_ROOT).resolve()
+        self.expected_pose_indices = self._normalize_pose_indices(expected_pose_indices)
 
         df = load_manifest_dataframe(manifest_path=self.manifest_path, manifest_df=manifest_df)
         filtered_df = filter_manifest_dataframe(
@@ -128,69 +141,54 @@ class MEEIDataset(Dataset):
             subset_seed=subset_seed,
         )
 
-        self.samples = self._build_patient_samples(filtered_df)
+        self.samples = self._build_samples(filtered_df, pose_indices=pose_indices)
+        if validate_filepaths:
+            self._validate_sample_filepaths(self.samples)
         self.labels = [int(sample["hb_grade"]) for sample in self.samples]
         self.patient_ids = [str(sample["patient_id"]) for sample in self.samples]
 
     @staticmethod
-    def _build_patient_samples(df: pd.DataFrame) -> list[dict[str, Any]]:
-        samples: list[dict[str, Any]] = []
+    def _normalize_pose_indices(pose_indices: Sequence[int] | None) -> list[int] | None:
+        if pose_indices is None:
+            return None
+        return [int(pose_index) for pose_index in pose_indices]
 
-        for patient_id, group in df.groupby("patient_id", sort=True):
-            group = group.sort_values("pose_index")
-            filepaths = group["filepath"].tolist()
-            pose_indices = group["pose_index"].tolist()
+    def _build_samples(
+        self,
+        df: pd.DataFrame,
+        *,
+        pose_indices: Sequence[int] | None,
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError
 
-            labels = group["hb_grade"].unique()
-            if len(labels) != 1:
-                raise ValueError(f"Patient {patient_id} has multiple hb_grade values: {labels}")
+    def _validate_sample_filepaths(self, samples: list[dict[str, Any]]) -> None:
+        missing: list[str] = []
+        for sample in samples:
+            for filepath, resolved_filepath in zip(
+                sample["filepaths"],
+                sample["resolved_filepaths"],
+            ):
+                if not Path(resolved_filepath).exists():
+                    missing.append(filepath)
+        if missing:
+            raise FileNotFoundError(f"Missing image files: {missing[:5]}")
 
-            if not filepaths:
-                raise ValueError(f"Patient {patient_id} has no image rows in split '{group['split'].iloc[0]}'.")
-
-            samples.append(
-                {
-                    "patient_id": str(patient_id),
-                    "filepaths": filepaths,
-                    "pose_indices": pose_indices,
-                    "hb_grade": int(labels[0]),
-                }
-            )
-
-        if not samples:
-            raise ValueError("No patient samples were created from the manifest.")
-
-        return samples
-
-    def __len__(self) -> int:
-        return len(self.samples)
-
-    def __getitem__(self, idx: int) -> dict[str, Any]:
-        sample = self.samples[idx]
-
-        images = []
-        for filepath in sample["filepaths"]:
-            with Image.open(filepath) as image:
-                image = image.convert("RGB")
-                image = self.transform(image)
-            images.append(image)
-
-        stacked_images = torch.stack(images, dim=0)
-        label = torch.tensor(sample["hb_grade"], dtype=torch.long)
-
-        return {
-            "images": stacked_images,
-            "label": label,
-            "patient_id": sample["patient_id"],
-            "pose_indices": sample["pose_indices"],
-        }
+    @staticmethod
+    def _resolve_filepaths(filepaths: list[str], *, project_root: Path) -> list[str]:
+        return [
+            str(resolve_manifest_filepath(filepath, project_root=project_root))
+            for filepath in filepaths
+        ]
 
     def get_labels(self) -> list[int]:
         return self.labels.copy()
 
+    def __len__(self) -> int:
+        return len(self.samples)
 
-class MEEISingleImageDataset(Dataset):
-    """Dataset that returns one image per sample for a single-image baseline."""
+
+class MEEIDataset(BasePalsyDataset):
+    """Patient-level dataset that returns all requested poses for one patient."""
 
     def __init__(
         self,
@@ -201,46 +199,165 @@ class MEEISingleImageDataset(Dataset):
         manifest_df: pd.DataFrame | None = None,
         patient_ids: Sequence[str] | None = None,
         pose_indices: Sequence[int] | None = None,
+        expected_pose_indices: Sequence[int] | None = None,
         max_patients: int | None = None,
+        project_root: Path | None = None,
         subset_seed: int = 42,
+        validate_filepaths: bool = True,
     ) -> None:
-        self.manifest_path = Path(manifest_path) if manifest_path is not None else None
-        self.split = split
-        self.transform = transform if transform is not None else get_basic_transform()
+        normalized_expected_pose_indices = self._normalize_pose_indices(expected_pose_indices)
+        if normalized_expected_pose_indices is None and pose_indices is not None:
+            normalized_expected_pose_indices = self._normalize_pose_indices(pose_indices)
 
-        df = load_manifest_dataframe(manifest_path=self.manifest_path, manifest_df=manifest_df)
-        self.df = filter_manifest_dataframe(
-            df=df,
+        super().__init__(
+            manifest_path=manifest_path,
             split=split,
+            transform=transform,
+            manifest_df=manifest_df,
             patient_ids=patient_ids,
             pose_indices=pose_indices,
+            expected_pose_indices=normalized_expected_pose_indices,
             max_patients=max_patients,
+            project_root=project_root,
             subset_seed=subset_seed,
+            validate_filepaths=validate_filepaths,
         )
 
-        self.labels = self.df["hb_grade"].astype(int).tolist()
-        self.patient_ids = self.df["patient_id"].astype(str).tolist()
+    def _build_samples(
+        self,
+        df: pd.DataFrame,
+        *,
+        pose_indices: Sequence[int] | None,
+    ) -> list[dict[str, Any]]:
+        samples: list[dict[str, Any]] = []
 
-    def __len__(self) -> int:
-        return len(self.df)
+        for patient_id, group in df.groupby("patient_id", sort=True):
+            group = group.sort_values("pose_index")
+            filepaths = [str(filepath) for filepath in group["filepath"].tolist()]
+            patient_pose_indices = [int(pose_index) for pose_index in group["pose_index"].tolist()]
+
+            labels = group["hb_grade"].unique()
+            if len(labels) != 1:
+                raise ValueError(f"Patient {patient_id} has multiple hb_grade values: {labels}")
+
+            if not filepaths:
+                raise ValueError(
+                    f"Patient {patient_id} has no image rows in split '{group['split'].iloc[0]}'."
+                )
+
+            if len(set(patient_pose_indices)) != len(patient_pose_indices):
+                raise ValueError(f"Patient {patient_id} has duplicate pose indices: {patient_pose_indices}")
+
+            if self.expected_pose_indices is not None and patient_pose_indices != self.expected_pose_indices:
+                raise ValueError(
+                    f"Patient {patient_id} pose indices {patient_pose_indices} do not match expected "
+                    f"{self.expected_pose_indices}."
+                )
+
+            samples.append(
+                {
+                    "patient_id": str(patient_id),
+                    "filepaths": filepaths,
+                    "resolved_filepaths": self._resolve_filepaths(
+                        filepaths,
+                        project_root=self.project_root,
+                    ),
+                    "pose_indices": patient_pose_indices,
+                    "hb_grade": int(labels[0]),
+                }
+            )
+
+        if not samples:
+            raise ValueError("No patient samples were created from the manifest.")
+
+        return samples
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
-        row = self.df.iloc[idx]
+        sample = self.samples[idx]
 
-        img_path = row["filepath"]
-        label = torch.tensor(int(row["hb_grade"]), dtype=torch.long)
+        images = []
+        for filepath in sample["resolved_filepaths"]:
+            with Image.open(filepath) as image:
+                image = image.convert("RGB")
+                image = self.transform(image)
+            images.append(image)
+
+        inputs = torch.stack(images, dim=0)
+        label = torch.tensor(sample["hb_grade"], dtype=torch.long)
+
+        return {
+            "inputs": inputs,
+            "label": label,
+            "metadata": {
+                "patient_id": sample["patient_id"],
+                "pose_indices": sample["pose_indices"],
+                "filepaths": sample["filepaths"],
+                "sample_index": idx,
+            },
+        }
+
+
+class MEEISingleImageDataset(BasePalsyDataset):
+    """Dataset that returns one image per sample for a single-image baseline."""
+
+    def _build_samples(
+        self,
+        df: pd.DataFrame,
+        *,
+        pose_indices: Sequence[int] | None,
+    ) -> list[dict[str, Any]]:
+        samples: list[dict[str, Any]] = []
+
+        expected_pose_index_set = (
+            set(self.expected_pose_indices)
+            if self.expected_pose_indices is not None
+            else None
+        )
+
+        for row in df.itertuples(index=False):
+            pose_index = int(row.pose_index)
+            if expected_pose_index_set is not None and pose_index not in expected_pose_index_set:
+                raise ValueError(
+                    f"Pose index {pose_index} is not in expected_pose_indices "
+                    f"{sorted(expected_pose_index_set)}."
+                )
+
+            filepath = str(row.filepath)
+            samples.append(
+                {
+                    "patient_id": str(row.patient_id),
+                    "filepaths": [filepath],
+                    "resolved_filepaths": self._resolve_filepaths(
+                        [filepath],
+                        project_root=self.project_root,
+                    ),
+                    "pose_indices": [pose_index],
+                    "hb_grade": int(row.hb_grade),
+                }
+            )
+
+        if not samples:
+            raise ValueError("No image samples were created from the manifest.")
+
+        return samples
+
+    def __getitem__(self, idx: int) -> dict[str, Any]:
+        sample = self.samples[idx]
+        img_path = sample["resolved_filepaths"][0]
+        label = torch.tensor(sample["hb_grade"], dtype=torch.long)
 
         with Image.open(img_path) as image:
             image = image.convert("RGB")
             image = self.transform(image)
 
         return {
-            "image": image,
+            "inputs": image,
             "label": label,
-            "patient_id": str(row["patient_id"]),
-            "pose_index": int(row["pose_index"]),
+            "metadata": {
+                "patient_id": sample["patient_id"],
+                "pose_indices": sample["pose_indices"],
+                "pose_index": sample["pose_indices"][0],
+                "filepaths": sample["filepaths"],
+                "sample_index": idx,
+            },
         }
-
-    def get_labels(self) -> list[int]:
-        return self.labels.copy()
-

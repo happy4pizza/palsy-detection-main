@@ -14,8 +14,10 @@ from typing import Iterable
 
 import pandas as pd
 
+from src.data_pipeline.path_utils import PROJECT_ROOT, relativize_to_project_root
 
-BASE_DIR = Path(__file__).resolve().parents[2]
+
+BASE_DIR = PROJECT_ROOT
 DEFAULT_DATA_DIR = BASE_DIR / "data"
 DEFAULT_RAW_DIR = DEFAULT_DATA_DIR / "raw"
 DEFAULT_XLSX_PATH = DEFAULT_RAW_DIR / "pat_info.xlsx"
@@ -25,14 +27,19 @@ DEFAULT_OUT_CSV = DEFAULT_DATA_DIR / "manifests" / "manifest_raw.csv"
 MEDIA_SUFFIXES = {".jpg", ".jpeg", ".mp4"}
 POSE_PATTERN = re.compile(r"_(\d+)\.(?:jpe?g)$", re.IGNORECASE)
 
-HB_GRADE_KEYWORDS = [
-    ("Normal", 0),
-    ("NearNormal", 1),
-    ("Mild", 2),
-    ("Moderate", 3),
-    ("Severe", 4),
-    ("Complete", 5),
-]
+HB_GRADE_BY_FOLDER = {
+    "Normal": 0,
+    "NearNormalFlaccid": 1,
+    "NearNormalSynkinetic": 1,
+    "MildFlaccid": 2,
+    "MildSynkinetic": 2,
+    "ModerateFlaccid": 3,
+    "ModerateSynkinetic": 3,
+    "SevereFlaccid": 4,
+    "SevereSynkinetic": 4,
+    "CompleteFlaccid": 5,
+    "CompleteSynkinetic": 5,
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,19 +57,11 @@ def extract_pose_index(filename: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def extract_hb_grade(severity_folder: str) -> int | None:
-    normalized = severity_folder.strip().lower()
-
-    # Prefer exact matches first.
-    for keyword, grade in HB_GRADE_KEYWORDS:
-        if normalized == keyword.lower():
-            return grade
-
-    # Fallback for folder names with extra qualifiers.
-    for keyword, grade in sorted(HB_GRADE_KEYWORDS, key=lambda item: len(item[0]), reverse=True):
-        if keyword.lower() in normalized:
-            return grade
-    return None
+def extract_hb_grade(severity_folder: str) -> int:
+    try:
+        return HB_GRADE_BY_FOLDER[severity_folder.strip()]
+    except KeyError as exc:
+        raise ValueError(f"Unknown severity folder: {severity_folder}") from exc
 
 
 def iter_media_paths(raw_dir: Path) -> Iterable[Path]:
@@ -99,7 +98,7 @@ def parse_file_record(path: Path, raw_dir: Path) -> dict[str, object] | None:
         "severity_folder": severity_folder,
         "modality": modality,
         "pose_index": pose_index,
-        "filepath": str(path.resolve()),
+        "filepath": relativize_to_project_root(path),
     }
 
 
